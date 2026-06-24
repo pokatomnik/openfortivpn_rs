@@ -1,6 +1,6 @@
 [package]
 name = "openfortivpn-rs"
-version = "1.24.1"
+version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 rust-version = "1.76"
