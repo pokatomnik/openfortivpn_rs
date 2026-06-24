@@ -1,7 +1,8 @@
 openfortivpn
 ============
 
-openfortivpn is a client for PPP+TLS VPN tunnel services.
+openfortivpn is a client for PPP+TLS VPN tunnel services rewritten in Rust.
+[Here is](https://github.com/adrienverge/openfortivpn) the original project written in C.
 It spawns a pppd process and operates the communication between the gateway and
 this process.
 
@@ -11,7 +12,7 @@ Usage
 -----
 
 ```shell
-man openfortivpn
+openfortivpn --config /path/to/config.conf
 ```
 
 Examples
@@ -76,11 +77,6 @@ The pkcs11-engine from libp11 needs to be compiled with p11-kit-devel installed.
 Check [#464](https://github.com/adrienverge/openfortivpn/issues/464) for a discussion
 of known issues in this area.
 
-Building on Fedora since [this
-update](https://src.fedoraproject.org/rpms/openssl/c/13b583a535e62d12521cfeb5088a68e5811eb6e6?branch=rawhide)
-will NOT include engine support unless `openssl-devel-engine` is installed. Try
-first to use `pkcs11-provider` on OpenSSL >= 3.0.
-
 To make use of your smartcard put at least `pkcs11:` to the user-cert config or commandline
 option. It takes the full or a partial PKCS#11 token URI.
 
@@ -101,100 +97,26 @@ Smartcard support has been tested with Yubikey under Linux, but other PIV enable
 smartcards may work too. On Mac OS X Mojave it is known that the pkcs engine-by-id
 is not found.
 
-Installing
-----------
+## Installing
 
-### Installing existing packages
-
-Some Linux distributions provide `openfortivpn` packages:
-* [Fedora / CentOS](https://packages.fedoraproject.org/pkgs/openfortivpn)
-* [openSUSE / SLE](https://software.opensuse.org/package/openfortivpn)
-* [Gentoo](https://packages.gentoo.org/packages/net-vpn/openfortivpn)
-* [NixOS](https://github.com/NixOS/nixpkgs/tree/master/pkgs/by-name/op/openfortivpn)
-* [Arch Linux](https://archlinux.org/packages/extra/x86_64/openfortivpn)
-* [Debian](https://packages.debian.org/stable/openfortivpn)
-* [Ubuntu](https://packages.ubuntu.com/search?keywords=openfortivpn)
-* [Solus](https://github.com/getsolus/packages/tree/main/packages/o/openfortivpn)
-* [Alpine Linux](https://pkgs.alpinelinux.org/package/edge/testing/x86_64/openfortivpn)
-
-On macOS both [Homebrew](https://formulae.brew.sh/formula/openfortivpn) and
-[MacPorts](https://ports.macports.org/port/openfortivpn)
-provide an `openfortivpn` package.
-Either [install Homebrew](https://brew.sh/) then install openfortivpn:
-```shell
-# Install 'Homebrew'
-/usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
-
-# Install 'openfortivpn'
-brew install openfortivpn
-```
-
-or [install MacPorts](https://www.macports.org/install.php) then install openfortivpn:
-```shell
-# Install 'openfortivpn'
-sudo port install openfortivpn
-```
-
-A more complete overview can be obtained from [repology](https://repology.org/project/openfortivpn/versions).
+Check out releases to get a binary
 
 ### Building and installing from source
 
-For other distros, you'll need to build and install from source:
+To build and install `openfortivpn` from source, ensure you have Rust and Cargo installed (via [rustup](https://rustup.rs/)).
 
-1.  Install build dependencies.
+```shell
+# Clone the repository
+git clone https://github.com/adrienverge/openfortivpn.git
+cd openfortivpn
 
-    * RHEL/CentOS/Fedora: `gcc` `automake` `autoconf` `openssl-devel` `make` `pkg-config`
-    * Debian/Ubuntu: `gcc` `automake` `autoconf` `libssl-dev` `make` `pkg-config`
-    * Arch Linux: `gcc` `automake` `autoconf` `openssl` `pkg-config`
-    * Gentoo Linux: `net-dialup/ppp` `pkg-config`
-    * openSUSE: `gcc` `automake` `autoconf` `libopenssl-devel` `pkg-config`
-    * macOS (Homebrew): `automake` `autoconf` `openssl@1.1` `pkg-config`
-    * FreeBSD: `automake` `autoconf` `libressl` `pkgconf`
+# Build the project
+cargo build --release
 
-    On Linux, if you manage your kernel yourself, ensure to compile those modules:
-    ```text
-    CONFIG_PPP=m
-    CONFIG_PPP_ASYNC=m
-    ```
-
-    On macOS, install 'Homebrew' to install the build dependencies:
-    ```shell
-    # Install 'Homebrew'
-    /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
-
-    # Install Dependencies
-    brew install automake autoconf openssl@1.1 pkg-config
-
-    # You may need to make this openssl available to compilers and pkg-config
-    export LDFLAGS="-L/usr/local/opt/openssl/lib $LDFLAGS"
-    export CPPFLAGS="-I/usr/local/opt/openssl/include $CPPFLAGS"
-    export PKG_CONFIG_PATH="/usr/local/opt/openssl/lib/pkgconfig:$PKG_CONFIG_PATH"
-    ```
-
-2.  Build and install.
-
-    ```shell
-    ./autogen.sh
-    ./configure --prefix=/usr/local --sysconfdir=/etc
-    make
-    sudo make install
-    ```
-
-    If targeting platforms with pppd < 2.5.0 such as current version of macOS,
-    we suggest you configure with option --enable-legacy-pppd:
-
-    ```shell
-    ./autogen.sh
-    ./configure --prefix=/usr/local --sysconfdir=/etc --enable-legacy-pppd
-    make
-    sudo make install
-    ```
-
-    If you need to specify the openssl location you can set the `$PKG_CONFIG_PATH`
-    environment variable. For fine-tuning check the available configure arguments
-    with `./configure --help` especially when you are cross compiling.
-
-    Finally, install runtime dependency `ppp` or `pppd`.
+# The binary will be located at target/release/openfortivpn
+# You can install it to your system (e.g., /usr/local/bin)
+sudo cp target/release/openfortivpn /usr/local/bin/
+```
 
 Running as root?
 ----------------
@@ -251,6 +173,3 @@ Contributing
 ------------
 
 Feel free to make pull requests!
-
-C coding style should follow the
-[Linux kernel coding style](https://www.kernel.org/doc/html/latest/process/coding-style.html).
