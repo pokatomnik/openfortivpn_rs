@@ -1,0 +1,91 @@
+name: Manual build
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to attach binaries to (defaults to the current ref name)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            binary: openfortivpn
+            archive: openfortivpn-macos-arm64.tar.gz
+            artifact: openfortivpn-macos-arm64
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: openfortivpn
+            archive: openfortivpn-linux-x86_64.tar.gz
+            artifact: openfortivpn-linux-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select stable Rust toolchain
+        run: |
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package release binary
+        shell: pwsh
+        run: |
+          $binaryPath = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          $stagingDir = "package/${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $stagingDir, "dist" | Out-Null
+          Copy-Item $binaryPath $stagingDir
+
+          if ("${{ matrix.archive }}".EndsWith(".zip")) {
+            Compress-Archive -Path "$stagingDir/*" -DestinationPath "dist/${{ matrix.archive }}" -Force
+          } else {
+            tar -czf "dist/${{ matrix.archive }}" -C $stagingDir "${{ matrix.binary }}"
+          }
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: openfortivpn-*
+          merge-multiple: true
+
+      - name: Publish binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: dist/*

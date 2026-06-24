@@ -1,6 +1,0 @@
-### configuration file for openfortivpn, see man openfortivpn(1) ###
-
-host = vpn.example.org
-port = 443
-username = vpnuser
-password = VPNpassw0rd
