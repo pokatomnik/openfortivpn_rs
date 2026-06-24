@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use crate::config::Config;
 use crate::error::{OpenfortivpnError, Result};
 use crate::http::{do_http_request, HttpResponse};
+use crate::logger;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VpnConfigXml {
@@ -28,6 +29,7 @@ pub fn request_vpn_allocation<S: Read + Write>(
     stream: &mut S,
     config: &Config,
     cookie: &str,
+    portal_redirect: Option<&str>,
 ) -> Result<()> {
     let host = http_host(config);
     let cookie_header = [
@@ -35,22 +37,30 @@ pub fn request_vpn_allocation<S: Read + Write>(
         ("User-Agent", config.user_agent.as_str()),
     ];
 
-    ensure_success(do_http_request(
-        stream,
-        &host,
-        "GET",
-        "/remote/index",
-        &cookie_header,
-        b"",
-    )?)?;
-    ensure_success(do_http_request(
-        stream,
-        &host,
-        "GET",
+    if let Some(path) = valid_redirect_path(portal_redirect) {
+        logger::info(&format!("following post-login portal redirect: {path}"));
+        ensure_success(
+            path,
+            do_http_request(stream, &host, "GET", path, &cookie_header, b"")?,
+        )?;
+    } else {
+        ensure_success(
+            "/remote/index",
+            do_http_request(stream, &host, "GET", "/remote/index", &cookie_header, b"")?,
+        )?;
+    }
+
+    ensure_success(
         "/remote/fortisslvpn",
-        &cookie_header,
-        b"",
-    )?)?;
+        do_http_request(
+            stream,
+            &host,
+            "GET",
+            "/remote/fortisslvpn",
+            &cookie_header,
+            b"",
+        )?,
+    )?;
 
     Ok(())
 }
@@ -72,7 +82,7 @@ pub fn get_vpn_config<S: Read + Write>(
         ],
         b"",
     )?;
-    ensure_success(response.clone())?;
+    ensure_success("/remote/fortisslvpn_xml", response.clone())?;
     let raw_xml = response
         .body_as_str()
         .ok_or_else(|| OpenfortivpnError::HttpProtocol("VPN config XML is not UTF-8".to_owned()))?
@@ -83,17 +93,20 @@ pub fn get_vpn_config<S: Read + Write>(
 
 pub fn log_out<S: Read + Write>(stream: &mut S, config: &Config, cookie: &str) -> Result<()> {
     let host = http_host(config);
-    ensure_success(do_http_request(
-        stream,
-        &host,
-        "GET",
+    ensure_success(
         "/remote/logout",
-        &[
-            ("Cookie", cookie),
-            ("User-Agent", config.user_agent.as_str()),
-        ],
-        b"",
-    )?)
+        do_http_request(
+            stream,
+            &host,
+            "GET",
+            "/remote/logout",
+            &[
+                ("Cookie", cookie),
+                ("User-Agent", config.user_agent.as_str()),
+            ],
+            b"",
+        )?,
+    )
 }
 
 pub fn parse_vpn_config_xml(raw_xml: &str) -> VpnConfigXml {
@@ -126,14 +139,34 @@ pub fn parse_vpn_config_xml(raw_xml: &str) -> VpnConfigXml {
     }
 }
 
-fn ensure_success(response: HttpResponse) -> Result<()> {
+fn valid_redirect_path(path: Option<&str>) -> Option<&str> {
+    path.filter(|path| path.starts_with('/') && !path.starts_with("//"))
+}
+
+fn ensure_success(path: &str, response: HttpResponse) -> Result<()> {
     if (200..300).contains(&response.status_code) {
         Ok(())
     } else {
+        log_http_error_context(path, &response);
         Err(OpenfortivpnError::HttpProtocol(format!(
-            "unexpected HTTP status: {} {}",
+            "{path}: unexpected HTTP status: {} {}",
             response.status_code, response.reason
         )))
+    }
+}
+
+fn log_http_error_context(path: &str, response: &HttpResponse) {
+    let header_names = response.header_names();
+    if !header_names.is_empty() {
+        logger::debug(&format!(
+            "HTTP error response headers for {path}: {}",
+            header_names.join(", ")
+        ));
+    }
+    if let Some(preview) = response.body_preview(512) {
+        logger::debug(&format!(
+            "HTTP error response body preview for {path}: {preview}"
+        ));
     }
 }
 
@@ -349,10 +382,35 @@ mod tests {
         let second = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
         let mut stream = MockStream::new_sequence(vec![first.to_vec(), second.to_vec()]);
 
-        request_vpn_allocation(&mut stream, &cfg, "SVPNCOOKIE=abc").unwrap();
+        request_vpn_allocation(&mut stream, &cfg, "SVPNCOOKIE=abc", None).unwrap();
 
         let written = String::from_utf8(stream.written).unwrap();
         assert!(written.contains("GET /remote/index HTTP/1.1\r\n"));
+        assert!(written.contains("GET /remote/fortisslvpn HTTP/1.1\r\n"));
+        assert_eq!(written.matches("Cookie: SVPNCOOKIE=abc\r\n").count(), 2);
+    }
+
+    #[test]
+    fn follows_portal_redirect_instead_of_remote_index() {
+        let cfg = Config {
+            gateway_host: "vpn.example".to_owned(),
+            ..Config::default()
+        };
+        let first = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let second = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let mut stream = MockStream::new_sequence(vec![first.to_vec(), second.to_vec()]);
+
+        request_vpn_allocation(
+            &mut stream,
+            &cfg,
+            "SVPNCOOKIE=abc",
+            Some("/sslvpn/portal.html"),
+        )
+        .unwrap();
+
+        let written = String::from_utf8(stream.written).unwrap();
+        assert!(written.contains("GET /sslvpn/portal.html HTTP/1.1\r\n"));
+        assert!(!written.contains("GET /remote/index HTTP/1.1\r\n"));
         assert!(written.contains("GET /remote/fortisslvpn HTTP/1.1\r\n"));
         assert_eq!(written.matches("Cookie: SVPNCOOKIE=abc\r\n").count(), 2);
     }
@@ -425,6 +483,23 @@ mod tests {
         assert_eq!(parsed.raw_xml, body);
         assert_eq!(parsed.assigned_ip.as_deref(), Some("10.0.0.2"));
         assert!(parsed.split_routes.is_empty());
+    }
+
+    #[test]
+    fn reports_endpoint_on_http_status_error() {
+        let cfg = Config {
+            gateway_host: "vpn.example".to_owned(),
+            ..Config::default()
+        };
+        let mut stream =
+            MockStream::new(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec());
+
+        let err = get_vpn_config(&mut stream, &cfg, "SVPNCOOKIE=abc").unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "HTTP protocol error: /remote/fortisslvpn_xml: unexpected HTTP status: 403 Forbidden"
+        );
     }
 
     struct MockStream {

@@ -210,6 +210,7 @@ fn run_tunnel(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
     let apply_network = config.set_routes || config.set_dns;
     let apply_config = config.clone();
     let apply_vpn_config = session.prepared.vpn_config.clone();
+    let expected_interface_addr = vpn_config_interface_addr(&apply_vpn_config);
     let apply_tunnel_endpoint = tunnel_endpoint_ipv4(session.prepared.tcp_peer_addr);
     let apply_platform = current_platform();
     let preferred_interface = config
@@ -225,6 +226,14 @@ fn run_tunnel(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
             logger::info(&format!("observed IPCP IPv4 address: {addr}"));
             if !apply_network || network_apply_thread.is_some() {
                 return;
+            }
+            if let Some(expected) = expected_interface_addr {
+                if addr != expected {
+                    logger::debug(&format!(
+                        "ignoring IPCP IPv4 address {addr}; waiting for VPN interface address {expected}"
+                    ));
+                    return;
+                }
             }
             let Some(platform) = apply_platform else {
                 logger::warn("network configuration skipped: unsupported platform");
@@ -369,6 +378,14 @@ fn apply_network_after_interface_up(
     Ok(Some(applied))
 }
 
+fn vpn_config_interface_addr(vpn_config: &VpnConfigXml) -> Option<Ipv4Addr> {
+    vpn_config
+        .assigned_ip
+        .as_deref()
+        .or(vpn_config.gateway.as_deref())
+        .and_then(|addr| addr.parse().ok())
+}
+
 fn tunnel_endpoint_ipv4(addr: std::net::SocketAddr) -> Option<Ipv4Addr> {
     match addr.ip() {
         std::net::IpAddr::V4(addr) => Some(addr),
@@ -424,5 +441,44 @@ fn describe_network_action(action: &NetworkAction) -> String {
             }
             parts.join(" ")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vpn_config_interface_addr_prefers_assigned_ip() {
+        let vpn_config = VpnConfigXml {
+            raw_xml: String::new(),
+            gateway: Some("10.0.0.1".to_owned()),
+            assigned_ip: Some("10.0.0.2".to_owned()),
+            dns_servers: Vec::new(),
+            dns_suffix: None,
+            split_routes: Vec::new(),
+        };
+
+        assert_eq!(
+            vpn_config_interface_addr(&vpn_config),
+            Some("10.0.0.2".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn vpn_config_interface_addr_falls_back_to_gateway() {
+        let vpn_config = VpnConfigXml {
+            raw_xml: String::new(),
+            gateway: Some("10.0.0.1".to_owned()),
+            assigned_ip: None,
+            dns_servers: Vec::new(),
+            dns_suffix: None,
+            split_routes: Vec::new(),
+        };
+
+        assert_eq!(
+            vpn_config_interface_addr(&vpn_config),
+            Some("10.0.0.1".parse().unwrap())
+        );
     }
 }
