@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
@@ -197,6 +198,10 @@ pub struct Cli {
 
     #[arg(long = "ppp-system")]
     pub ppp_system: Option<String>,
+
+    /// Run isolated SOCKS5H proxy mode on the given local address instead of creating an OS VPN tunnel
+    #[arg(long = "proxy")]
+    pub proxy: Option<SocketAddr>,
 }
 
 fn parse_cli_bool(value: &str) -> Result<bool, String> {
@@ -241,6 +246,12 @@ mod tests {
 
         let cli = Cli::parse_from(["openfortivpn", "--pppd-accept-remote=0", "vpn.example"]);
         assert_eq!(cli.pppd_accept_remote, Some(false));
+    }
+
+    #[test]
+    fn parses_proxy_listen_address() {
+        let cli = Cli::parse_from(["openfortivpn", "--proxy", "127.0.0.1:1080", "vpn.example"]);
+        assert_eq!(cli.proxy, Some("127.0.0.1:1080".parse().unwrap()));
     }
 
     #[test]

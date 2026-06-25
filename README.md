@@ -118,6 +118,43 @@ cargo build --release
 sudo cp target/release/openfortivpn /usr/local/bin/
 ```
 
+Experimental SOCKS5H proxy mode
+--------------------------------
+
+Instead of creating a system-wide VPN tunnel, `openfortivpn` can run an isolated
+local SOCKS5H proxy:
+
+```shell
+openfortivpn vpn-gateway:8443 --username=foo --proxy 127.0.0.1:1180
+```
+
+Or with a configuration file:
+
+```shell
+openfortivpn --config /path/to/config.conf --proxy 127.0.0.1:1180
+```
+
+Use `--socks5-hostname` with clients such as `curl` so hostnames are resolved
+through the VPN DNS servers instead of the local system resolver:
+
+```shell
+curl --socks5-hostname 127.0.0.1:1180 http://internal.example/
+```
+
+Proxy mode uses the same authentication and VPN allocation flow as normal tunnel
+mode, but does not spawn `pppd` and does not modify system routes or DNS. It
+runs its own userspace PPP/TCP stack and applies VPN routes internally for proxy
+connections.
+
+Current limitations:
+
+* experimental feature;
+* TCP `CONNECT` only;
+* IPv4 only;
+* DNS supports A records over TCP through VPN DNS servers;
+* no UDP ASSOCIATE, ICMP, IPv6, or system-wide routing;
+* only applications configured to use the SOCKS5H proxy will use the VPN.
+
 Running as root?
 ----------------
 

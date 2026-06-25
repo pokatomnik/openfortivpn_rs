@@ -108,6 +108,14 @@ impl TlsConnection {
         self.stream.get_ref().set_nonblocking(nonblocking)
     }
 
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.stream.get_ref().set_read_timeout(timeout)
+    }
+
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.stream.get_ref().set_write_timeout(timeout)
+    }
+
     pub fn into_inner(self) -> SslStream<TcpStream> {
         self.stream
     }

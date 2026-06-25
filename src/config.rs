@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::cli::Cli;
@@ -63,6 +64,7 @@ pub struct Config {
     pub min_tls: Option<TlsVersion>,
     pub seclevel_1: bool,
     pub trusted_certs: Vec<String>,
+    pub proxy: Option<SocketAddr>,
 }
 
 impl Default for Config {
@@ -112,6 +114,7 @@ impl Default for Config {
             min_tls: None,
             seclevel_1: false,
             trusted_certs: Vec::new(),
+            proxy: None,
         }
     }
 }
@@ -216,6 +219,7 @@ impl Config {
         merge_option(&mut self.min_tls, other.min_tls);
         self.seclevel_1 |= other.seclevel_1;
         self.trusted_certs.extend(other.trusted_certs);
+        merge_option(&mut self.proxy, other.proxy);
     }
 
     fn apply_pair(&mut self, key: &str, value: &str) -> Result<()> {
@@ -260,6 +264,7 @@ impl Config {
             "user-agent" => self.user_agent = value.to_owned(),
             "hostcheck" => self.hostcheck = Some(value.to_owned()),
             "check-virtual-desktop" => self.check_virtual_desktop = Some(value.to_owned()),
+            "proxy" => self.proxy = Some(parse_socket_addr("proxy", value)?),
             other => return Err(OpenfortivpnError::UnknownConfigKey(other.to_owned())),
         }
 
@@ -402,6 +407,9 @@ impl Config {
         if let Some(value) = &cli.ppp_system {
             self.ppp_system = Some(value.clone());
         }
+        if let Some(value) = cli.proxy {
+            self.proxy = Some(value);
+        }
 
         Ok(())
     }
@@ -443,6 +451,12 @@ pub fn parse_bool(value: &str) -> Result<bool> {
         Ok(1) => Ok(true),
         _ => Err(OpenfortivpnError::BadBoolean(value.to_owned())),
     }
+}
+
+fn parse_socket_addr(key: &str, value: &str) -> Result<SocketAddr> {
+    value
+        .parse()
+        .map_err(|_| OpenfortivpnError::Network(format!("bad socket address for {key}: {value}")))
 }
 
 fn parse_port(key: &str, value: &str) -> Result<u16> {

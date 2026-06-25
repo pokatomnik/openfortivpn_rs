@@ -8,6 +8,7 @@ pub mod logger;
 pub mod net_apply;
 pub mod net_plan;
 pub mod pinentry;
+pub mod proxy;
 pub mod tls;
 pub mod tunnel;
 pub mod user_input;

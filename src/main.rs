@@ -13,6 +13,7 @@ use openfortivpn_rs::error::{OpenfortivpnError, Result};
 use openfortivpn_rs::logger;
 use openfortivpn_rs::net_apply::{apply_network_plan, AppliedNetworkPlan, ApplyOptions};
 use openfortivpn_rs::net_plan::{plan_network_actions, NetworkAction, Platform};
+use openfortivpn_rs::proxy;
 use openfortivpn_rs::tunnel::forward;
 use openfortivpn_rs::tunnel::interface::wait_for_up_ppp_interface;
 #[cfg(unix)]
@@ -43,7 +44,9 @@ fn main() -> Result<()> {
 
     validate_and_complete_auth_config(&mut config)?;
 
-    require_root()?;
+    if config.proxy.is_none() {
+        require_root()?;
+    }
 
     if config.saml_port.is_some() {
         let saml_session_id = saml::wait_for_session_id(&config)?;
@@ -111,7 +114,11 @@ fn apply_stdin_cookie(config: &mut Config) -> Result<()> {
 
 fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
     loop {
-        let result = run_tunnel(config.clone(), stop_requested.clone());
+        let result = if config.proxy.is_some() {
+            proxy::run(config.clone(), stop_requested.clone())
+        } else {
+            run_tunnel(config.clone(), stop_requested.clone())
+        };
         if stop_requested.load(Ordering::SeqCst) || config.persistent.is_none() {
             return result;
         }
