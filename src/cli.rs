@@ -100,7 +100,7 @@ pub struct Cli {
     #[arg(long = "ca-file")]
     pub ca_file: Option<String>,
 
-    /// User certificate path or pkcs11 URI
+    /// User certificate PEM path (PKCS#11 URIs are not supported with rustls)
     #[arg(long = "user-cert")]
     pub user_cert: Option<String>,
 
@@ -140,7 +140,7 @@ pub struct Cli {
     #[arg(long = "insecure-ssl", action = ArgAction::SetTrue)]
     pub insecure_ssl: bool,
 
-    /// OpenSSL cipher list
+    /// OpenSSL-compatible cipher list (unsupported with rustls)
     #[arg(long = "cipher-list")]
     pub cipher_list: Option<String>,
 
@@ -148,7 +148,7 @@ pub struct Cli {
     #[arg(long = "min-tls")]
     pub min_tls: Option<String>,
 
-    /// Lower OpenSSL security level to 1
+    /// Lower OpenSSL security level to 1 (unsupported with rustls)
     #[arg(long = "seclevel-1", action = ArgAction::SetTrue)]
     pub seclevel_1: bool,
 

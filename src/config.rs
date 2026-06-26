@@ -6,7 +6,6 @@ use crate::cli::Cli;
 use crate::error::{OpenfortivpnError, Result};
 
 pub const DEFAULT_GATEWAY_PORT: u16 = 443;
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/openfortivpn/config";
 pub const SHA256_DIGEST_HEX_LEN: usize = 64;
 pub const DEFAULT_LOG_VERBOSITY: u8 = 3;
 pub const MAX_LOG_VERBOSITY: u8 = 6;
@@ -123,16 +122,8 @@ impl Config {
     pub fn from_sources(cli: &Cli) -> Result<Self> {
         let mut cfg = Config::default();
 
-        let config_path = cli
-            .config
-            .as_deref()
-            .unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH));
-        match Self::from_file(config_path) {
-            Ok(file_cfg) => cfg.merge(file_cfg),
-            Err(err) => eprintln!(
-                "warning: could not load configuration file \"{}\" ({err})",
-                config_path.display()
-            ),
+        if let Some(config_path) = cli.config.as_deref() {
+            cfg.merge(Self::from_file(config_path)?);
         }
 
         cfg.apply_cli(cli)?;
@@ -572,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn from_sources_continues_when_default_config_is_missing() {
+    fn from_sources_does_not_load_default_config_path() {
         use clap::Parser;
 
         let cli = Cli::parse_from(["openfortivpn", "vpn.example"]);

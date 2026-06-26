@@ -1,4 +1,5 @@
 use std::io::Read;
+#[cfg(unix)]
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -6,21 +7,29 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
-use openfortivpn_rs::auth::{portal::VpnConfigXml, saml};
+#[cfg(unix)]
+use openfortivpn_rs::auth::portal::VpnConfigXml;
+use openfortivpn_rs::auth::saml;
 use openfortivpn_rs::cli::Cli;
 use openfortivpn_rs::config::{svpn_cookie_with_prefix, Config};
 use openfortivpn_rs::error::{OpenfortivpnError, Result};
 use openfortivpn_rs::logger;
+#[cfg(unix)]
 use openfortivpn_rs::net_apply::{apply_network_plan, AppliedNetworkPlan, ApplyOptions};
+#[cfg(unix)]
 use openfortivpn_rs::net_plan::{plan_network_actions, NetworkAction, Platform};
 use openfortivpn_rs::proxy;
+#[cfg(unix)]
 use openfortivpn_rs::tunnel::forward;
+#[cfg(unix)]
 use openfortivpn_rs::tunnel::interface::wait_for_up_ppp_interface;
 #[cfg(unix)]
 use openfortivpn_rs::tunnel::pppd::terminate_pppd;
+#[cfg(unix)]
 use openfortivpn_rs::tunnel::pppd::{
     build_ppp_command, build_pppd_command, spawn_pppd, DEFAULT_PPPD_PATH, DEFAULT_PPP_PATH,
 };
+#[cfg(unix)]
 use openfortivpn_rs::tunnel::session::TunnelSession;
 use openfortivpn_rs::user_input;
 
@@ -142,6 +151,7 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
     }
 }
 
+#[cfg(unix)]
 fn run_tunnel(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
     if config.gateway_host.is_empty() {
         return Err(OpenfortivpnError::Auth(
@@ -310,6 +320,7 @@ fn run_tunnel(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
     forward_result.map(|_| ())
 }
 
+#[cfg(unix)]
 fn build_ppp_backend_command(config: &Config) -> openfortivpn_rs::tunnel::pppd::PppdCommand {
     if config.ppp_system.is_some() {
         build_ppp_command(config, DEFAULT_PPP_PATH)
@@ -341,6 +352,14 @@ fn require_root() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn run_tunnel(_config: Config, _stop_requested: Arc<AtomicBool>) -> Result<()> {
+    Err(OpenfortivpnError::Network(
+        "system VPN tunnel mode is only supported on Unix; use --proxy on this platform".to_owned(),
+    ))
+}
+
+#[cfg(unix)]
 fn apply_network_after_interface_up(
     config: Config,
     vpn_config: VpnConfigXml,
@@ -385,6 +404,7 @@ fn apply_network_after_interface_up(
     Ok(Some(applied))
 }
 
+#[cfg(unix)]
 fn vpn_config_interface_addr(vpn_config: &VpnConfigXml) -> Option<Ipv4Addr> {
     vpn_config
         .assigned_ip
@@ -393,6 +413,7 @@ fn vpn_config_interface_addr(vpn_config: &VpnConfigXml) -> Option<Ipv4Addr> {
         .and_then(|addr| addr.parse().ok())
 }
 
+#[cfg(unix)]
 fn tunnel_endpoint_ipv4(addr: std::net::SocketAddr) -> Option<Ipv4Addr> {
     match addr.ip() {
         std::net::IpAddr::V4(addr) => Some(addr),
@@ -400,6 +421,7 @@ fn tunnel_endpoint_ipv4(addr: std::net::SocketAddr) -> Option<Ipv4Addr> {
     }
 }
 
+#[cfg(unix)]
 fn current_platform() -> Option<Platform> {
     #[cfg(target_os = "linux")]
     {
@@ -415,6 +437,7 @@ fn current_platform() -> Option<Platform> {
     }
 }
 
+#[cfg(unix)]
 fn describe_network_action(action: &NetworkAction) -> String {
     match action {
         NetworkAction::DropWrongTunnelRoute {
@@ -451,7 +474,7 @@ fn describe_network_action(action: &NetworkAction) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

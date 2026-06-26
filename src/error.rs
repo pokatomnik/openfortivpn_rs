@@ -7,9 +7,6 @@ pub enum OpenfortivpnError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("OpenSSL error: {0}")]
-    OpenSsl(#[from] openssl::error::ErrorStack),
-
     #[error("TLS handshake failed: {0}")]
     TlsHandshake(String),
 

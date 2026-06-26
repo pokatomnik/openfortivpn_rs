@@ -43,6 +43,7 @@ pub fn run(
     logger::info(&format!("SOCKS5H proxy listening on {listen}"));
 
     let mut sessions = Vec::<ProxySession>::new();
+    let mut next_session_id = 1u64;
     while !stop_requested.load(Ordering::SeqCst) {
         accept_ready_clients(
             &listener,
@@ -51,6 +52,7 @@ pub fn run(
             &mut netstack,
             &route_table,
             &dns_servers,
+            &mut next_session_id,
             &mut sessions,
         )?;
         read_fortinet_packets(&mut transport, &mut ppp, &mut netstack)?;
@@ -71,12 +73,19 @@ pub fn run(
 
 #[derive(Debug)]
 struct ProxySession {
+    id: u64,
     client: TcpStream,
     handle: SocketHandle,
     to_remote: VecDeque<u8>,
     to_client: VecDeque<u8>,
     socks_replied: bool,
     local_closed: bool,
+    remote_closed: bool,
+    client_to_remote_bytes: u64,
+    remote_to_client_bytes: u64,
+    client_addr: SocketAddr,
+    target: String,
+    close_reason: Option<String>,
 }
 
 fn accept_ready_clients(
@@ -86,6 +95,7 @@ fn accept_ready_clients(
     netstack: &mut ProxyNetStack<'_>,
     route_table: &ProxyRouteTable,
     dns_servers: &[Ipv4Addr],
+    next_session_id: &mut u64,
     sessions: &mut Vec<ProxySession>,
 ) -> Result<()> {
     loop {
@@ -144,20 +154,30 @@ fn accept_ready_clients(
             continue;
         }
 
+        let session_id = *next_session_id;
+        *next_session_id = next_session_id.wrapping_add(1).max(1);
+        let target = format!("{}:{}", destination, request.port);
+
         client.set_read_timeout(None)?;
         client.set_write_timeout(None)?;
         client.set_nonblocking(true)?;
         logger::info(&format!(
-            "SOCKS5 proxy connection from {addr} to {}:{}",
-            destination, request.port
+            "SOCKS5 proxy session #{session_id} from {addr} to {target}"
         ));
         sessions.push(ProxySession {
+            id: session_id,
             client,
             handle,
             to_remote: VecDeque::new(),
             to_client: VecDeque::new(),
             socks_replied: false,
             local_closed: false,
+            remote_closed: false,
+            client_to_remote_bytes: 0,
+            remote_to_client_bytes: 0,
+            client_addr: addr,
+            target,
+            close_reason: None,
         });
     }
 }
@@ -314,12 +334,15 @@ fn pump_local_to_tcp(
             let chunk = drain_chunk(&mut session.to_remote, IO_BUFFER_SIZE);
             match netstack.tcp_send(session.handle, &chunk) {
                 Ok(written) if written < chunk.len() => {
+                    session.client_to_remote_bytes += written as u64;
                     push_front_bytes(&mut session.to_remote, &chunk[written..]);
                     break;
                 }
-                Ok(_) => {}
+                Ok(written) => {
+                    session.client_to_remote_bytes += written as u64;
+                }
                 Err(err) => {
-                    logger::warn(&format!("proxy TCP send failed: {err:?}"));
+                    mark_closed(session, format!("proxy TCP send failed: {err:?}"));
                     netstack.tcp_close(session.handle);
                     break;
                 }
@@ -330,23 +353,31 @@ fn pump_local_to_tcp(
             match session.client.read(&mut buf) {
                 Ok(0) => {
                     session.local_closed = true;
+                    mark_closed(session, "client closed connection".to_owned());
                     netstack.tcp_close(session.handle);
                     break;
                 }
                 Ok(n) => match netstack.tcp_send(session.handle, &buf[..n]) {
                     Ok(written) if written < n => {
+                        session.client_to_remote_bytes += written as u64;
                         session.to_remote.extend(&buf[written..n]);
                         break;
                     }
-                    Ok(_) => {}
+                    Ok(written) => {
+                        session.client_to_remote_bytes += written as u64;
+                    }
                     Err(err) => {
-                        logger::warn(&format!("proxy TCP send failed: {err:?}"));
+                        mark_closed(session, format!("proxy TCP send failed: {err:?}"));
                         netstack.tcp_close(session.handle);
                         break;
                     }
                 },
                 Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    mark_closed(session, format!("client read failed: {err}"));
+                    netstack.tcp_close(session.handle);
+                    break;
+                }
             }
         }
     }
@@ -367,7 +398,10 @@ fn pump_tcp_to_local(
         loop {
             match netstack.tcp_recv(session.handle, &mut buf) {
                 Ok(0) => break,
-                Ok(n) => session.to_client.extend(&buf[..n]),
+                Ok(n) => {
+                    session.remote_to_client_bytes += n as u64;
+                    session.to_client.extend(&buf[..n]);
+                }
                 Err(err) => {
                     let _ = err;
                     break;
@@ -380,6 +414,8 @@ fn pump_tcp_to_local(
             match session.client.write(&chunk) {
                 Ok(0) => {
                     push_front_bytes(&mut session.to_client, &chunk);
+                    mark_closed(session, "client write returned zero".to_owned());
+                    netstack.tcp_close(session.handle);
                     break;
                 }
                 Ok(written) if written < chunk.len() => {
@@ -391,7 +427,11 @@ fn pump_tcp_to_local(
                     push_front_bytes(&mut session.to_client, &chunk);
                     break;
                 }
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    mark_closed(session, format!("client write failed: {err}"));
+                    netstack.tcp_close(session.handle);
+                    break;
+                }
             }
         }
     }
@@ -420,15 +460,37 @@ fn flush_ppp_control(transport: &mut FortinetTransport, ppp: &mut PppEngine) -> 
 fn cleanup_sessions(sessions: &mut Vec<ProxySession>, netstack: &mut ProxyNetStack<'_>) {
     let mut index = 0;
     while index < sessions.len() {
-        let remove = sessions[index].local_closed
+        let active = netstack.tcp_is_active(sessions[index].handle);
+        if !active && !sessions[index].remote_closed {
+            sessions[index].remote_closed = true;
+            mark_closed(&mut sessions[index], "remote TCP closed".to_owned());
+        }
+
+        let remove = (sessions[index].local_closed || sessions[index].remote_closed)
             && sessions[index].to_client.is_empty()
-            && !netstack.tcp_is_active(sessions[index].handle);
+            && sessions[index].to_remote.is_empty()
+            && !active;
         if remove {
             let session = sessions.remove(index);
+            logger::info(&format!(
+                "SOCKS5 proxy session #{} closed: {} -> {}; client->remote={} bytes, remote->client={} bytes; reason: {}",
+                session.id,
+                session.client_addr,
+                session.target,
+                session.client_to_remote_bytes,
+                session.remote_to_client_bytes,
+                session.close_reason.as_deref().unwrap_or("unknown")
+            ));
             netstack.remove_tcp_socket(session.handle);
         } else {
             index += 1;
         }
+    }
+}
+
+fn mark_closed(session: &mut ProxySession, reason: String) {
+    if session.close_reason.is_none() {
+        session.close_reason = Some(reason);
     }
 }
 
