@@ -121,7 +121,10 @@ fn apply_stdin_cookie(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+
 fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
+    let mut reconnect_attempts = 0;
     loop {
         let result = if config.proxy.is_some() {
             proxy::run(config.clone(), stop_requested.clone())
@@ -136,9 +139,19 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
             logger::warn(&format!("VPN tunnel terminated: {err}"));
         }
 
+        if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+            logger::warn(&format!(
+                "maximum reconnect attempts reached ({MAX_RECONNECT_ATTEMPTS}); exiting"
+            ));
+            return result;
+        }
+        reconnect_attempts += 1;
+
         let interval = config.persistent.unwrap_or_default();
         if interval > 0 {
-            logger::info(&format!("reconnecting in {interval} second(s)"));
+            logger::info(&format!(
+                "reconnecting in {interval} second(s) (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})"
+            ));
             for _ in 0..interval {
                 if stop_requested.load(Ordering::SeqCst) {
                     return result;
@@ -146,7 +159,9 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
                 thread::sleep(Duration::from_secs(1));
             }
         } else {
-            logger::info("reconnecting immediately");
+            logger::info(&format!(
+                "reconnecting immediately (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})"
+            ));
         }
     }
 }
