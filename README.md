@@ -64,10 +64,90 @@ Examples
   trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
   ```
 
-* For the full list of config options, see the `CONFIGURATION` section of
-  ```shell
-  man openfortivpn
-  ```
+Configuration
+-------------
+
+Configuration is loaded only from the file passed with `--config` / `-c`.
+There is no implicit default config file.
+
+The config file format is one `key = value` pair per line. Empty lines and
+lines starting with `#` are ignored.
+
+```ini
+host = vpn-gateway
+port = 8443
+username = foo
+password = secret
+realm = employees
+set-routes = true
+set-dns = true
+trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
+```
+
+Command-line options override values loaded from the config file.
+
+Boolean values accept `true`, `false`, `1`, or `0`.
+
+Supported configuration keys:
+
+Authentication and session:
+
+* `host` - VPN gateway hostname or address.
+* `port` - VPN gateway port. Default: `443`.
+* `username` - VPN username.
+* `password` - VPN password.
+* `otp` - one-time password / token code.
+* `otp-prompt` - prompt text used when requesting OTP.
+* `otp-delay` - delay in seconds before sending OTP.
+* `no-ftm-push` - disable FortiToken Mobile push flow.
+* `pinentry` - pinentry program used to request secrets.
+* `realm` - authentication realm.
+* `saml-login` - enable SAML login and set local callback port.
+
+Tunnel and network setup:
+
+* `ifname` - preferred VPN interface name.
+* `sni` - TLS SNI hostname override.
+* `set-routes` - install VPN routes. Default: `true`.
+* `half-internet-routes` - use two `/1` routes instead of a default route.
+* `set-dns` - install VPN DNS configuration. Default: `true`.
+* `use-resolvconf` - use `resolvconf` for DNS setup when available. Default: `true`.
+* `persistent` - reconnect interval in seconds. Reconnect attempts are limited to `5`.
+
+PPP / pppd:
+
+* `pppd-use-peerdns` - let `pppd` request peer DNS servers.
+* `pppd-log` - pppd log file path.
+* `pppd-plugin` - pppd plugin path.
+* `pppd-ipparam` - pppd `ipparam` value.
+* `pppd-ifname` - pppd interface name.
+* `pppd-call` - pppd call profile name.
+* `pppd-accept-remote` - accept remote PPP address. Default: `true`.
+* `ppp-system` - PPP system profile name.
+
+TLS and certificates:
+
+* `trusted-cert` - trusted peer certificate SHA256 digest. Can be repeated.
+* `ca-file` - custom CA bundle path.
+* `user-cert` - client certificate path.
+* `user-key` - client private key path.
+* `pem-passphrase` - passphrase for PEM private key.
+* `insecure-ssl` - disable certificate verification.
+* `cipher-list` - accepted for compatibility, but unsupported by the Rustls TLS backend.
+* `min-tls` - minimum TLS version: `1.0`, `1.1`, `1.2`, or `1.3`. Rustls supports TLS 1.2+.
+* `seclevel-1` - accepted for compatibility, but unsupported by the Rustls TLS backend.
+
+Logging and compatibility:
+
+* `use-syslog` - log to syslog on Unix.
+* `user-agent` - HTTP User-Agent sent to the VPN gateway. Default: `Mozilla/5.0 SV1`.
+* `hostcheck` - hostcheck response value.
+* `check-virtual-desktop` - virtual desktop check response value.
+
+Ignored in config files:
+
+* `cookie`
+* `cookie-on-stdin`
 
 Smartcard
 ---------
