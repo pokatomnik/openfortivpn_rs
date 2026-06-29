@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant as StdInstant};
 
@@ -21,6 +21,7 @@ const DNS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(10);
 const LOOP_SLEEP: Duration = Duration::from_millis(5);
 const IO_BUFFER_SIZE: usize = 16 * 1024;
+const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn run(
     listen: SocketAddr,
@@ -43,6 +44,7 @@ pub fn run(
     logger::info(&format!("SOCKS5H proxy listening on {listen}"));
 
     let mut sessions = Vec::<ProxySession>::new();
+    let mut direct_sessions = Vec::<DirectProxySession>::new();
     let mut next_session_id = 1u64;
     while !stop_requested.load(Ordering::SeqCst) {
         accept_ready_clients(
@@ -54,18 +56,25 @@ pub fn run(
             &dns_servers,
             &mut next_session_id,
             &mut sessions,
+            &mut direct_sessions,
         )?;
         read_fortinet_packets(&mut transport, &mut ppp, &mut netstack)?;
         pump_local_to_tcp(&mut sessions, &mut netstack)?;
         netstack.poll(smol_now());
         pump_tcp_to_local(&mut sessions, &mut netstack)?;
+        pump_direct_sessions(&mut direct_sessions)?;
         drain_netstack_to_fortinet(&mut netstack, &mut ppp, &mut transport)?;
         cleanup_sessions(&mut sessions, &mut netstack);
+        cleanup_direct_sessions(&mut direct_sessions);
         std::thread::sleep(LOOP_SLEEP);
     }
 
     for session in &mut sessions {
         netstack.tcp_close(session.handle);
+    }
+    for session in &mut direct_sessions {
+        let _ = session.client.shutdown(std::net::Shutdown::Both);
+        let _ = session.remote.shutdown(std::net::Shutdown::Both);
     }
     drain_netstack_to_fortinet(&mut netstack, &mut ppp, &mut transport)?;
     Ok(())
@@ -88,6 +97,22 @@ struct ProxySession {
     close_reason: Option<String>,
 }
 
+#[derive(Debug)]
+struct DirectProxySession {
+    id: u64,
+    client: TcpStream,
+    remote: TcpStream,
+    to_remote: VecDeque<u8>,
+    to_client: VecDeque<u8>,
+    local_closed: bool,
+    remote_closed: bool,
+    client_to_remote_bytes: u64,
+    remote_to_client_bytes: u64,
+    client_addr: SocketAddr,
+    target: String,
+    close_reason: Option<String>,
+}
+
 fn accept_ready_clients(
     listener: &TcpListener,
     transport: &mut FortinetTransport,
@@ -97,6 +122,7 @@ fn accept_ready_clients(
     dns_servers: &[Ipv4Addr],
     next_session_id: &mut u64,
     sessions: &mut Vec<ProxySession>,
+    direct_sessions: &mut Vec<DirectProxySession>,
 ) -> Result<()> {
     loop {
         let (mut client, addr) = match listener.accept() {
@@ -125,21 +151,36 @@ fn accept_ready_clients(
                         logger::info(&format!("resolved {domain} via VPN DNS to {addr}"));
                         addr
                     }
-                    Err(err) => {
-                        let _ = socks5::write_failure(&mut client, socks5::REPLY_HOST_UNREACHABLE);
-                        logger::warn(&format!("failed to resolve {domain} via VPN DNS: {err}"));
-                        continue;
-                    }
+                    Err(err) => match resolve_domain_direct(&domain, request.port) {
+                        Ok(addr) => {
+                            logger::info(&format!(
+                                "resolved {domain} via system DNS to {addr} after VPN DNS failed: {err}"
+                            ));
+                            addr
+                        }
+                        Err(direct_err) => {
+                            let _ =
+                                socks5::write_failure(&mut client, socks5::REPLY_HOST_UNREACHABLE);
+                            logger::warn(&format!(
+                                "failed to resolve {domain} via VPN DNS ({err}) and system DNS ({direct_err})"
+                            ));
+                            continue;
+                        }
+                    },
                 }
             }
         };
 
         if !route_table.can_route(destination) {
-            let _ = socks5::write_failure(&mut client, socks5::REPLY_HOST_UNREACHABLE);
-            logger::warn(&format!(
-                "SOCKS5 target {}:{} rejected by proxy route table",
-                destination, request.port
-            ));
+            let session_id = *next_session_id;
+            *next_session_id = next_session_id.wrapping_add(1).max(1);
+            match start_direct_session(session_id, client, addr, destination, request.port) {
+                Ok(session) => direct_sessions.push(session),
+                Err(err) => logger::warn(&format!(
+                    "failed to start direct SOCKS5 connection to {}:{}: {err}",
+                    destination, request.port
+                )),
+            }
             continue;
         }
 
@@ -180,6 +221,65 @@ fn accept_ready_clients(
             close_reason: None,
         });
     }
+}
+
+fn start_direct_session(
+    id: u64,
+    mut client: TcpStream,
+    client_addr: SocketAddr,
+    destination: Ipv4Addr,
+    port: u16,
+) -> Result<DirectProxySession> {
+    let remote_addr = SocketAddr::V4(SocketAddrV4::new(destination, port));
+    let remote = match TcpStream::connect_timeout(&remote_addr, DIRECT_CONNECT_TIMEOUT) {
+        Ok(remote) => remote,
+        Err(err) => {
+            let _ = socks5::write_failure(&mut client, socks5::REPLY_HOST_UNREACHABLE);
+            return Err(err.into());
+        }
+    };
+
+    socks5::write_success(&mut client, Ipv4Addr::UNSPECIFIED, 0)?;
+    client.set_read_timeout(None)?;
+    client.set_write_timeout(None)?;
+    client.set_nonblocking(true)?;
+    remote.set_read_timeout(None)?;
+    remote.set_write_timeout(None)?;
+    remote.set_nonblocking(true)?;
+
+    let target = format!("{destination}:{port}");
+    logger::info(&format!(
+        "SOCKS5 direct session #{id} from {client_addr} to {target} outside VPN routes"
+    ));
+    Ok(DirectProxySession {
+        id,
+        client,
+        remote,
+        to_remote: VecDeque::new(),
+        to_client: VecDeque::new(),
+        local_closed: false,
+        remote_closed: false,
+        client_to_remote_bytes: 0,
+        remote_to_client_bytes: 0,
+        client_addr,
+        target,
+        close_reason: None,
+    })
+}
+
+fn resolve_domain_direct(domain: &str, port: u16) -> Result<Ipv4Addr> {
+    let mut last_error = None;
+    for addr in (domain, port).to_socket_addrs()? {
+        if let SocketAddr::V4(addr) = addr {
+            return Ok(*addr.ip());
+        }
+        last_error = Some(format!(
+            "resolved {addr}, but proxy mode supports IPv4 only"
+        ));
+    }
+    Err(OpenfortivpnError::Network(last_error.unwrap_or_else(
+        || format!("system DNS returned no IPv4 address for {domain}"),
+    )))
 }
 
 fn resolve_domain(
@@ -297,11 +397,7 @@ fn read_fortinet_packets(
     loop {
         let packet = match transport.read_packet() {
             Ok(packet) => packet,
-            Err(OpenfortivpnError::Io(err))
-                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                return Ok(())
-            }
+            Err(OpenfortivpnError::Io(err)) if is_temporary_read_error(&err) => return Ok(()),
             Err(err) => return Err(err),
         };
 
@@ -318,6 +414,11 @@ fn read_fortinet_packets(
         }
         flush_ppp_control(transport, ppp)?;
     }
+}
+
+fn is_temporary_read_error(err: &std::io::Error) -> bool {
+    matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+        || cfg!(windows) && err.raw_os_error() == Some(997)
 }
 
 fn pump_local_to_tcp(
@@ -438,6 +539,108 @@ fn pump_tcp_to_local(
     Ok(())
 }
 
+fn pump_direct_sessions(sessions: &mut [DirectProxySession]) -> Result<()> {
+    let mut buf = [0; IO_BUFFER_SIZE];
+    for session in sessions {
+        while !session.to_remote.is_empty() {
+            let chunk = drain_chunk(&mut session.to_remote, IO_BUFFER_SIZE);
+            match session.remote.write(&chunk) {
+                Ok(0) => {
+                    push_front_bytes(&mut session.to_remote, &chunk);
+                    mark_direct_closed(session, "direct remote write returned zero".to_owned());
+                    session.remote_closed = true;
+                    break;
+                }
+                Ok(written) if written < chunk.len() => {
+                    session.client_to_remote_bytes += written as u64;
+                    push_front_bytes(&mut session.to_remote, &chunk[written..]);
+                    break;
+                }
+                Ok(written) => session.client_to_remote_bytes += written as u64,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    push_front_bytes(&mut session.to_remote, &chunk);
+                    break;
+                }
+                Err(err) => {
+                    mark_direct_closed(session, format!("direct remote write failed: {err}"));
+                    session.remote_closed = true;
+                    break;
+                }
+            }
+        }
+
+        while !session.to_client.is_empty() {
+            let chunk = drain_chunk(&mut session.to_client, IO_BUFFER_SIZE);
+            match session.client.write(&chunk) {
+                Ok(0) => {
+                    push_front_bytes(&mut session.to_client, &chunk);
+                    mark_direct_closed(session, "direct client write returned zero".to_owned());
+                    session.local_closed = true;
+                    break;
+                }
+                Ok(written) if written < chunk.len() => {
+                    session.remote_to_client_bytes += written as u64;
+                    push_front_bytes(&mut session.to_client, &chunk[written..]);
+                    break;
+                }
+                Ok(written) => session.remote_to_client_bytes += written as u64,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    push_front_bytes(&mut session.to_client, &chunk);
+                    break;
+                }
+                Err(err) => {
+                    mark_direct_closed(session, format!("direct client write failed: {err}"));
+                    session.local_closed = true;
+                    break;
+                }
+            }
+        }
+
+        if !session.local_closed && session.to_remote.is_empty() {
+            loop {
+                match session.client.read(&mut buf) {
+                    Ok(0) => {
+                        session.local_closed = true;
+                        mark_direct_closed(session, "client closed connection".to_owned());
+                        let _ = session.remote.shutdown(std::net::Shutdown::Write);
+                        break;
+                    }
+                    Ok(n) => session.to_remote.extend(&buf[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        session.local_closed = true;
+                        mark_direct_closed(session, format!("direct client read failed: {err}"));
+                        let _ = session.remote.shutdown(std::net::Shutdown::Write);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !session.remote_closed && session.to_client.is_empty() {
+            loop {
+                match session.remote.read(&mut buf) {
+                    Ok(0) => {
+                        session.remote_closed = true;
+                        mark_direct_closed(session, "direct remote closed connection".to_owned());
+                        let _ = session.client.shutdown(std::net::Shutdown::Write);
+                        break;
+                    }
+                    Ok(n) => session.to_client.extend(&buf[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        session.remote_closed = true;
+                        mark_direct_closed(session, format!("direct remote read failed: {err}"));
+                        let _ = session.client.shutdown(std::net::Shutdown::Write);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn drain_netstack_to_fortinet(
     netstack: &mut ProxyNetStack<'_>,
     ppp: &mut PppEngine,
@@ -488,7 +691,37 @@ fn cleanup_sessions(sessions: &mut Vec<ProxySession>, netstack: &mut ProxyNetSta
     }
 }
 
+fn cleanup_direct_sessions(sessions: &mut Vec<DirectProxySession>) {
+    let mut index = 0;
+    while index < sessions.len() {
+        let remove = sessions[index].local_closed
+            && sessions[index].remote_closed
+            && sessions[index].to_client.is_empty()
+            && sessions[index].to_remote.is_empty();
+        if remove {
+            let session = sessions.remove(index);
+            logger::info(&format!(
+                "SOCKS5 direct session #{} closed: {} -> {}; client->remote={} bytes, remote->client={} bytes; reason: {}",
+                session.id,
+                session.client_addr,
+                session.target,
+                session.client_to_remote_bytes,
+                session.remote_to_client_bytes,
+                session.close_reason.as_deref().unwrap_or("unknown")
+            ));
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn mark_closed(session: &mut ProxySession, reason: String) {
+    if session.close_reason.is_none() {
+        session.close_reason = Some(reason);
+    }
+}
+
+fn mark_direct_closed(session: &mut DirectProxySession, reason: String) {
     if session.close_reason.is_none() {
         session.close_reason = Some(reason);
     }
