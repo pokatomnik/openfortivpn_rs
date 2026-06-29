@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +17,10 @@ use crate::tunnel::fortinet::FortinetTransport;
 use crate::tunnel::ppp_engine::{PppEngine, PppEvent};
 
 const ACCEPT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const DNS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+const DNS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(10);
-const LOOP_SLEEP: Duration = Duration::from_millis(5);
+const LOOP_SLEEP: Duration = Duration::from_millis(1);
+const DNS_CACHE_TTL: Duration = Duration::from_secs(300);
 const IO_BUFFER_SIZE: usize = 16 * 1024;
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,6 +46,7 @@ pub fn run(
 
     let mut sessions = Vec::<ProxySession>::new();
     let mut direct_sessions = Vec::<DirectProxySession>::new();
+    let mut dns_cache = HashMap::<String, DnsCacheEntry>::new();
     let mut next_session_id = 1u64;
     while !stop_requested.load(Ordering::SeqCst) {
         accept_ready_clients(
@@ -54,6 +56,7 @@ pub fn run(
             &mut netstack,
             &route_table,
             &dns_servers,
+            &mut dns_cache,
             &mut next_session_id,
             &mut sessions,
             &mut direct_sessions,
@@ -113,6 +116,12 @@ struct DirectProxySession {
     close_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DnsCacheEntry {
+    addr: Ipv4Addr,
+    expires_at: StdInstant,
+}
+
 fn accept_ready_clients(
     listener: &TcpListener,
     transport: &mut FortinetTransport,
@@ -120,6 +129,7 @@ fn accept_ready_clients(
     netstack: &mut ProxyNetStack<'_>,
     route_table: &ProxyRouteTable,
     dns_servers: &[Ipv4Addr],
+    dns_cache: &mut HashMap<String, DnsCacheEntry>,
     next_session_id: &mut u64,
     sessions: &mut Vec<ProxySession>,
     direct_sessions: &mut Vec<DirectProxySession>,
@@ -146,7 +156,15 @@ fn accept_ready_clients(
         let destination = match request.target {
             SocksTarget::Ipv4(addr) => addr,
             SocksTarget::Domain(domain) => {
-                match resolve_domain(&domain, dns_servers, transport, ppp, netstack, route_table) {
+                match resolve_domain_cached(
+                    &domain,
+                    dns_servers,
+                    transport,
+                    ppp,
+                    netstack,
+                    route_table,
+                    dns_cache,
+                ) {
                     Ok(addr) => {
                         logger::info(&format!("resolved {domain} via VPN DNS to {addr}"));
                         addr
@@ -280,6 +298,34 @@ fn resolve_domain_direct(domain: &str, port: u16) -> Result<Ipv4Addr> {
     Err(OpenfortivpnError::Network(last_error.unwrap_or_else(
         || format!("system DNS returned no IPv4 address for {domain}"),
     )))
+}
+
+fn resolve_domain_cached(
+    domain: &str,
+    dns_servers: &[Ipv4Addr],
+    transport: &mut FortinetTransport,
+    ppp: &mut PppEngine,
+    netstack: &mut ProxyNetStack<'_>,
+    route_table: &ProxyRouteTable,
+    cache: &mut HashMap<String, DnsCacheEntry>,
+) -> Result<Ipv4Addr> {
+    let key = domain.to_ascii_lowercase();
+    let now = StdInstant::now();
+    if let Some(entry) = cache.get(&key) {
+        if entry.expires_at > now {
+            return Ok(entry.addr);
+        }
+    }
+
+    let addr = resolve_domain(domain, dns_servers, transport, ppp, netstack, route_table)?;
+    cache.insert(
+        key,
+        DnsCacheEntry {
+            addr,
+            expires_at: now + DNS_CACHE_TTL,
+        },
+    );
+    Ok(addr)
 }
 
 fn resolve_domain(

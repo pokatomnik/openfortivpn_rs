@@ -9,7 +9,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
 pub const DEFAULT_PROXY_MTU: usize = 1354;
-pub const DEFAULT_TCP_BUFFER_SIZE: usize = 64 * 1024;
+pub const DEFAULT_TCP_BUFFER_SIZE: usize = 256 * 1024;
 
 pub struct ProxyNetStack<'a> {
     iface: Interface,
@@ -194,7 +194,7 @@ impl Device for PppDevice {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip;
         caps.max_transmission_unit = self.mtu;
-        caps.max_burst_size = Some(1);
+        caps.max_burst_size = Some(64);
         caps
     }
 }
