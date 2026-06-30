@@ -39,7 +39,8 @@ pub struct Config {
     pub set_routes: bool,
     pub set_dns: bool,
     pub half_internet_routes: bool,
-    pub persistent: Option<u32>,
+    pub reconnect_delay: Option<u32>,
+    pub max_reconnects: u32,
     pub use_syslog: bool,
     pub log_verbosity: u8,
     pub use_resolvconf: bool,
@@ -88,7 +89,8 @@ impl Default for Config {
             set_routes: true,
             set_dns: true,
             half_internet_routes: false,
-            persistent: None,
+            reconnect_delay: None,
+            max_reconnects: 0,
             use_syslog: false,
             log_verbosity: DEFAULT_LOG_VERBOSITY,
             use_resolvconf: true,
@@ -184,7 +186,10 @@ impl Config {
         self.set_routes = other.set_routes;
         self.set_dns = other.set_dns;
         self.half_internet_routes = other.half_internet_routes;
-        merge_option(&mut self.persistent, other.persistent);
+        merge_option(&mut self.reconnect_delay, other.reconnect_delay);
+        if other.max_reconnects != 0 {
+            self.max_reconnects = other.max_reconnects;
+        }
         self.use_syslog |= other.use_syslog;
         self.log_verbosity = other.log_verbosity;
         self.use_resolvconf = other.use_resolvconf;
@@ -230,7 +235,12 @@ impl Config {
             "sni" => self.sni = Some(value.to_owned()),
             "set-routes" => self.set_routes = parse_bool(value)?,
             "half-internet-routes" => self.half_internet_routes = parse_bool(value)?,
-            "persistent" => self.persistent = Some(parse_u32(key, value)?),
+            "reconnect-delay" | "reconnect_delay" | "persistent" => {
+                self.reconnect_delay = Some(parse_u32(key, value)?)
+            }
+            "max_recoonects" | "max_reconnects" | "max-reconnects" => {
+                self.max_reconnects = parse_u32(key, value)?
+            }
             "set-dns" => self.set_dns = parse_bool(value)?,
             "pppd-use-peerdns" => self.pppd_use_peerdns = parse_bool(value)?,
             "pppd-log" => self.pppd_log = Some(value.to_owned()),
@@ -368,8 +378,11 @@ impl Config {
         if cli.seclevel_1 {
             self.seclevel_1 = true;
         }
-        if let Some(value) = cli.persistent {
-            self.persistent = Some(value);
+        if let Some(value) = cli.reconnect_delay.or(cli.persistent) {
+            self.reconnect_delay = Some(value);
+        }
+        if let Some(value) = cli.max_reconnects {
+            self.max_reconnects = value;
         }
         if let Some(value) = cli.pppd_use_peerdns {
             self.pppd_use_peerdns = value;
@@ -535,6 +548,8 @@ mod tests {
             password = bar
             set-dns = 0
             trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
+            max_recoonects = 2
+            reconnect-delay = 5
             "#,
         )
         .unwrap();
@@ -545,6 +560,19 @@ mod tests {
         assert_eq!(cfg.password.as_deref(), Some("bar"));
         assert!(!cfg.set_dns);
         assert_eq!(cfg.trusted_certs.len(), 1);
+        assert_eq!(cfg.max_reconnects, 2);
+        assert_eq!(cfg.reconnect_delay, Some(5));
+    }
+
+    #[test]
+    fn parses_legacy_persistent_as_reconnect_delay() {
+        let cfg = Config::parse_config_file("persistent = 7").unwrap();
+        assert_eq!(cfg.reconnect_delay, Some(7));
+    }
+
+    #[test]
+    fn config_max_reconnects_defaults_to_zero() {
+        assert_eq!(Config::default().max_reconnects, 0);
     }
 
     #[test]

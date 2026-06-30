@@ -121,8 +121,6 @@ fn apply_stdin_cookie(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
-
 fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Result<()> {
     let mut reconnect_attempts = 0;
     loop {
@@ -131,7 +129,7 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
         } else {
             run_tunnel(config.clone(), stop_requested.clone())
         };
-        if stop_requested.load(Ordering::SeqCst) || config.persistent.is_none() {
+        if stop_requested.load(Ordering::SeqCst) || config.max_reconnects == 0 {
             return result;
         }
 
@@ -139,18 +137,20 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
             logger::warn(&format!("VPN tunnel terminated: {err}"));
         }
 
-        if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+        if reconnect_attempts >= config.max_reconnects {
             logger::warn(&format!(
-                "maximum reconnect attempts reached ({MAX_RECONNECT_ATTEMPTS}); exiting"
+                "maximum reconnect attempts reached ({}); exiting",
+                config.max_reconnects
             ));
             return result;
         }
         reconnect_attempts += 1;
 
-        let interval = config.persistent.unwrap_or_default();
+        let interval = config.reconnect_delay.unwrap_or_default();
         if interval > 0 {
             logger::info(&format!(
-                "reconnecting in {interval} second(s) (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})"
+                "reconnecting in {interval} second(s) (attempt {reconnect_attempts}/{})",
+                config.max_reconnects
             ));
             for _ in 0..interval {
                 if stop_requested.load(Ordering::SeqCst) {
@@ -160,7 +160,8 @@ fn run_with_persistence(config: Config, stop_requested: Arc<AtomicBool>) -> Resu
             }
         } else {
             logger::info(&format!(
-                "reconnecting immediately (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})"
+                "reconnecting immediately (attempt {reconnect_attempts}/{})",
+                config.max_reconnects
             ));
         }
     }

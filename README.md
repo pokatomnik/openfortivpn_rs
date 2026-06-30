@@ -112,7 +112,8 @@ Tunnel and network setup:
 * `half-internet-routes` - use two `/1` routes instead of a default route.
 * `set-dns` - install VPN DNS configuration. Default: `true`.
 * `use-resolvconf` - use `resolvconf` for DNS setup when available. Default: `true`.
-* `persistent` - reconnect interval in seconds. Reconnect attempts are limited to `5`.
+* `reconnect-delay` - delay in seconds between reconnect attempts. Used only when `max_recoonects` / `--max-reconnects` is greater than `0`.
+* `max_recoonects` - maximum number of reconnect attempts. Default: `0` (disabled).
 
 PPP / pppd:
 
@@ -225,6 +226,21 @@ Proxy mode uses the same authentication and VPN allocation flow as normal tunnel
 mode, but does not spawn `pppd` and does not modify system routes or DNS. It
 runs its own userspace PPP/TCP stack and applies VPN routes internally for proxy
 connections.
+
+Reconnect options work for both normal VPN mode and proxy mode:
+
+```shell
+openfortivpn --config /path/to/config.conf --proxy 127.0.0.1:1180 --max-reconnects 3 --reconnect-delay 5
+```
+
+This allows up to 3 reconnect attempts with a 5 second delay between attempts.
+By default, reconnects are disabled (`--max-reconnects 0`).
+
+`--persistent` was renamed to `--reconnect-delay`. The old name suggested that
+it enabled persistent reconnect behavior by itself, but reconnect behavior is now
+controlled explicitly by `--max-reconnects`. The new name describes the actual
+meaning: delay between reconnect attempts. `--persistent` is kept as a hidden
+legacy alias for compatibility.
 
 Current limitations:
 

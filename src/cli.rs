@@ -152,9 +152,17 @@ pub struct Cli {
     #[arg(long = "seclevel-1", action = ArgAction::SetTrue)]
     pub seclevel_1: bool,
 
-    /// Persistent reconnect interval in seconds
-    #[arg(long = "persistent")]
+    /// Reconnect delay in seconds; used only when --max-reconnects is greater than 0
+    #[arg(long = "reconnect-delay")]
+    pub reconnect_delay: Option<u32>,
+
+    /// Legacy alias for --reconnect-delay
+    #[arg(long = "persistent", hide = true)]
     pub persistent: Option<u32>,
+
+    /// Maximum number of reconnect attempts; 0 disables reconnects
+    #[arg(long = "max-reconnects")]
+    pub max_reconnects: Option<u32>,
 
     /// Increase verbosity; can be repeated
     #[arg(short = 'v', action = ArgAction::Count)]
@@ -252,6 +260,24 @@ mod tests {
     fn parses_proxy_listen_address() {
         let cli = Cli::parse_from(["openfortivpn", "--proxy", "127.0.0.1:1080", "vpn.example"]);
         assert_eq!(cli.proxy, Some("127.0.0.1:1080".parse().unwrap()));
+    }
+
+    #[test]
+    fn parses_max_reconnects() {
+        let cli = Cli::parse_from(["openfortivpn", "--max-reconnects", "2", "vpn.example"]);
+        assert_eq!(cli.max_reconnects, Some(2));
+    }
+
+    #[test]
+    fn parses_reconnect_delay() {
+        let cli = Cli::parse_from(["openfortivpn", "--reconnect-delay", "5", "vpn.example"]);
+        assert_eq!(cli.reconnect_delay, Some(5));
+    }
+
+    #[test]
+    fn parses_legacy_persistent_alias() {
+        let cli = Cli::parse_from(["openfortivpn", "--persistent", "5", "vpn.example"]);
+        assert_eq!(cli.persistent, Some(5));
     }
 
     #[test]
