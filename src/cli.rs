@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
@@ -99,7 +100,7 @@ pub struct Cli {
     #[arg(long = "ca-file")]
     pub ca_file: Option<String>,
 
-    /// User certificate path or pkcs11 URI
+    /// User certificate PEM path (PKCS#11 URIs are not supported with rustls)
     #[arg(long = "user-cert")]
     pub user_cert: Option<String>,
 
@@ -139,7 +140,7 @@ pub struct Cli {
     #[arg(long = "insecure-ssl", action = ArgAction::SetTrue)]
     pub insecure_ssl: bool,
 
-    /// OpenSSL cipher list
+    /// OpenSSL-compatible cipher list (unsupported with rustls)
     #[arg(long = "cipher-list")]
     pub cipher_list: Option<String>,
 
@@ -147,13 +148,21 @@ pub struct Cli {
     #[arg(long = "min-tls")]
     pub min_tls: Option<String>,
 
-    /// Lower OpenSSL security level to 1
+    /// Lower OpenSSL security level to 1 (unsupported with rustls)
     #[arg(long = "seclevel-1", action = ArgAction::SetTrue)]
     pub seclevel_1: bool,
 
-    /// Persistent reconnect interval in seconds
-    #[arg(long = "persistent")]
+    /// Reconnect delay in seconds; used only when --max-reconnects is greater than 0
+    #[arg(long = "reconnect-delay")]
+    pub reconnect_delay: Option<u32>,
+
+    /// Legacy alias for --reconnect-delay
+    #[arg(long = "persistent", hide = true)]
     pub persistent: Option<u32>,
+
+    /// Maximum number of reconnect attempts; 0 disables reconnects
+    #[arg(long = "max-reconnects")]
+    pub max_reconnects: Option<u32>,
 
     /// Increase verbosity; can be repeated
     #[arg(short = 'v', action = ArgAction::Count)]
@@ -197,6 +206,10 @@ pub struct Cli {
 
     #[arg(long = "ppp-system")]
     pub ppp_system: Option<String>,
+
+    /// Run isolated SOCKS5H proxy mode on the given local address instead of creating an OS VPN tunnel
+    #[arg(long = "proxy")]
+    pub proxy: Option<SocketAddr>,
 }
 
 fn parse_cli_bool(value: &str) -> Result<bool, String> {
@@ -241,6 +254,30 @@ mod tests {
 
         let cli = Cli::parse_from(["openfortivpn", "--pppd-accept-remote=0", "vpn.example"]);
         assert_eq!(cli.pppd_accept_remote, Some(false));
+    }
+
+    #[test]
+    fn parses_proxy_listen_address() {
+        let cli = Cli::parse_from(["openfortivpn", "--proxy", "127.0.0.1:1080", "vpn.example"]);
+        assert_eq!(cli.proxy, Some("127.0.0.1:1080".parse().unwrap()));
+    }
+
+    #[test]
+    fn parses_max_reconnects() {
+        let cli = Cli::parse_from(["openfortivpn", "--max-reconnects", "2", "vpn.example"]);
+        assert_eq!(cli.max_reconnects, Some(2));
+    }
+
+    #[test]
+    fn parses_reconnect_delay() {
+        let cli = Cli::parse_from(["openfortivpn", "--reconnect-delay", "5", "vpn.example"]);
+        assert_eq!(cli.reconnect_delay, Some(5));
+    }
+
+    #[test]
+    fn parses_legacy_persistent_alias() {
+        let cli = Cli::parse_from(["openfortivpn", "--persistent", "5", "vpn.example"]);
+        assert_eq!(cli.persistent, Some(5));
     }
 
     #[test]

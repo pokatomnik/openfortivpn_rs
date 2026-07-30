@@ -69,6 +69,7 @@ pub fn find_up_ppp_interface(
     Ok(None)
 }
 
+#[cfg(any(unix, test))]
 fn matches_interface_name(name: &str, preferred_name: Option<&str>) -> bool {
     if let Some(preferred_name) = preferred_name {
         if !preferred_name.is_empty() && name.contains(preferred_name) {

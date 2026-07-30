@@ -1,6 +1,8 @@
 use std::io::Write;
 
-use crate::error::{OpenfortivpnError, Result};
+#[cfg(unix)]
+use crate::error::OpenfortivpnError;
+use crate::error::Result;
 use crate::pinentry;
 
 pub fn read_secret(pinentry_program: Option<&str>, hint: &str, prompt: &str) -> Result<String> {

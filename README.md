@@ -64,10 +64,91 @@ Examples
   trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
   ```
 
-* For the full list of config options, see the `CONFIGURATION` section of
-  ```shell
-  man openfortivpn
-  ```
+Configuration
+-------------
+
+Configuration is loaded only from the file passed with `--config` / `-c`.
+There is no implicit default config file.
+
+The config file format is one `key = value` pair per line. Empty lines and
+lines starting with `#` are ignored.
+
+```ini
+host = vpn-gateway
+port = 8443
+username = foo
+password = secret
+realm = employees
+set-routes = true
+set-dns = true
+trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
+```
+
+Command-line options override values loaded from the config file.
+
+Boolean values accept `true`, `false`, `1`, or `0`.
+
+Supported configuration keys:
+
+Authentication and session:
+
+* `host` - VPN gateway hostname or address.
+* `port` - VPN gateway port. Default: `443`.
+* `username` - VPN username.
+* `password` - VPN password.
+* `otp` - one-time password / token code.
+* `otp-prompt` - prompt text used when requesting OTP.
+* `otp-delay` - delay in seconds before sending OTP.
+* `no-ftm-push` - disable FortiToken Mobile push flow.
+* `pinentry` - pinentry program used to request secrets.
+* `realm` - authentication realm.
+* `saml-login` - enable SAML login and set local callback port.
+
+Tunnel and network setup:
+
+* `ifname` - preferred VPN interface name.
+* `sni` - TLS SNI hostname override.
+* `set-routes` - install VPN routes. Default: `true`.
+* `half-internet-routes` - use two `/1` routes instead of a default route.
+* `set-dns` - install VPN DNS configuration. Default: `true`.
+* `use-resolvconf` - use `resolvconf` for DNS setup when available. Default: `true`.
+* `reconnect-delay` - delay in seconds between reconnect attempts. Used only when `max_recoonects` / `--max-reconnects` is greater than `0`.
+* `max_recoonects` - maximum number of reconnect attempts. Default: `0` (disabled).
+
+PPP / pppd:
+
+* `pppd-use-peerdns` - let `pppd` request peer DNS servers.
+* `pppd-log` - pppd log file path.
+* `pppd-plugin` - pppd plugin path.
+* `pppd-ipparam` - pppd `ipparam` value.
+* `pppd-ifname` - pppd interface name.
+* `pppd-call` - pppd call profile name.
+* `pppd-accept-remote` - accept remote PPP address. Default: `true`.
+* `ppp-system` - PPP system profile name.
+
+TLS and certificates:
+
+* `trusted-cert` - trusted peer certificate SHA256 digest. Can be repeated.
+* `ca-file` - custom CA bundle path.
+* `user-cert` - client certificate path.
+* `user-key` - client private key path.
+* `pem-passphrase` - passphrase for PEM private key.
+* `insecure-ssl` - disable certificate verification.
+* `cipher-list` - accepted for compatibility, but unsupported by the Rustls TLS backend.
+* `min-tls` - minimum TLS version: `1.0`, `1.1`, `1.2`, or `1.3`. Rustls supports TLS 1.2+.
+* `seclevel-1` - accepted for compatibility, but unsupported by the Rustls TLS backend.
+
+Logging and compatibility:
+
+* `use-syslog` - log to syslog on Unix.
+* `user-agent` - HTTP User-Agent sent to the VPN gateway. Default: `Mozilla/5.0 SV1`.
+* `hostcheck` - hostcheck response value.
+* `check-virtual-desktop` - virtual desktop check response value.
+
+Ignored in config files:
+
+* `cookie`
+* `cookie-on-stdin`
 
 Smartcard
 ---------
@@ -117,6 +198,58 @@ cargo build --release
 # You can install it to your system (e.g., /usr/local/bin)
 sudo cp target/release/openfortivpn /usr/local/bin/
 ```
+
+Experimental SOCKS5H proxy mode
+--------------------------------
+
+Instead of creating a system-wide VPN tunnel, `openfortivpn` can run an isolated
+local SOCKS5H proxy:
+
+```shell
+openfortivpn vpn-gateway:8443 --username=foo --proxy 127.0.0.1:1180
+```
+
+Or with a configuration file:
+
+```shell
+openfortivpn --config /path/to/config.conf --proxy 127.0.0.1:1180
+```
+
+Use `--socks5-hostname` with clients such as `curl` so hostnames are resolved
+through the VPN DNS servers instead of the local system resolver:
+
+```shell
+curl --socks5-hostname 127.0.0.1:1180 http://internal.example/
+```
+
+Proxy mode uses the same authentication and VPN allocation flow as normal tunnel
+mode, but does not spawn `pppd` and does not modify system routes or DNS. It
+runs its own userspace PPP/TCP stack and applies VPN routes internally for proxy
+connections.
+
+Reconnect options work for both normal VPN mode and proxy mode:
+
+```shell
+openfortivpn --config /path/to/config.conf --proxy 127.0.0.1:1180 --max-reconnects 3 --reconnect-delay 5
+```
+
+This allows up to 3 reconnect attempts with a 5 second delay between attempts.
+By default, reconnects are disabled (`--max-reconnects 0`).
+
+`--persistent` was renamed to `--reconnect-delay`. The old name suggested that
+it enabled persistent reconnect behavior by itself, but reconnect behavior is now
+controlled explicitly by `--max-reconnects`. The new name describes the actual
+meaning: delay between reconnect attempts. `--persistent` is kept as a hidden
+legacy alias for compatibility.
+
+Current limitations:
+
+* experimental feature;
+* TCP `CONNECT` only;
+* IPv4 only;
+* DNS supports A records over TCP through VPN DNS servers;
+* no UDP ASSOCIATE, ICMP, IPv6, or system-wide routing;
+* only applications configured to use the SOCKS5H proxy will use the VPN.
 
 Running as root?
 ----------------

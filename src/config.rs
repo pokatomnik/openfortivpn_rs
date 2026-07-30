@@ -1,11 +1,11 @@
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::cli::Cli;
 use crate::error::{OpenfortivpnError, Result};
 
 pub const DEFAULT_GATEWAY_PORT: u16 = 443;
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/openfortivpn/config";
 pub const SHA256_DIGEST_HEX_LEN: usize = 64;
 pub const DEFAULT_LOG_VERBOSITY: u8 = 3;
 pub const MAX_LOG_VERBOSITY: u8 = 6;
@@ -39,7 +39,8 @@ pub struct Config {
     pub set_routes: bool,
     pub set_dns: bool,
     pub half_internet_routes: bool,
-    pub persistent: Option<u32>,
+    pub reconnect_delay: Option<u32>,
+    pub max_reconnects: u32,
     pub use_syslog: bool,
     pub log_verbosity: u8,
     pub use_resolvconf: bool,
@@ -63,6 +64,7 @@ pub struct Config {
     pub min_tls: Option<TlsVersion>,
     pub seclevel_1: bool,
     pub trusted_certs: Vec<String>,
+    pub proxy: Option<SocketAddr>,
 }
 
 impl Default for Config {
@@ -87,7 +89,8 @@ impl Default for Config {
             set_routes: true,
             set_dns: true,
             half_internet_routes: false,
-            persistent: None,
+            reconnect_delay: None,
+            max_reconnects: 0,
             use_syslog: false,
             log_verbosity: DEFAULT_LOG_VERBOSITY,
             use_resolvconf: true,
@@ -112,6 +115,7 @@ impl Default for Config {
             min_tls: None,
             seclevel_1: false,
             trusted_certs: Vec::new(),
+            proxy: None,
         }
     }
 }
@@ -120,16 +124,8 @@ impl Config {
     pub fn from_sources(cli: &Cli) -> Result<Self> {
         let mut cfg = Config::default();
 
-        let config_path = cli
-            .config
-            .as_deref()
-            .unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH));
-        match Self::from_file(config_path) {
-            Ok(file_cfg) => cfg.merge(file_cfg),
-            Err(err) => eprintln!(
-                "warning: could not load configuration file \"{}\" ({err})",
-                config_path.display()
-            ),
+        if let Some(config_path) = cli.config.as_deref() {
+            cfg.merge(Self::from_file(config_path)?);
         }
 
         cfg.apply_cli(cli)?;
@@ -190,7 +186,10 @@ impl Config {
         self.set_routes = other.set_routes;
         self.set_dns = other.set_dns;
         self.half_internet_routes = other.half_internet_routes;
-        merge_option(&mut self.persistent, other.persistent);
+        merge_option(&mut self.reconnect_delay, other.reconnect_delay);
+        if other.max_reconnects != 0 {
+            self.max_reconnects = other.max_reconnects;
+        }
         self.use_syslog |= other.use_syslog;
         self.log_verbosity = other.log_verbosity;
         self.use_resolvconf = other.use_resolvconf;
@@ -216,6 +215,7 @@ impl Config {
         merge_option(&mut self.min_tls, other.min_tls);
         self.seclevel_1 |= other.seclevel_1;
         self.trusted_certs.extend(other.trusted_certs);
+        merge_option(&mut self.proxy, other.proxy);
     }
 
     fn apply_pair(&mut self, key: &str, value: &str) -> Result<()> {
@@ -235,7 +235,12 @@ impl Config {
             "sni" => self.sni = Some(value.to_owned()),
             "set-routes" => self.set_routes = parse_bool(value)?,
             "half-internet-routes" => self.half_internet_routes = parse_bool(value)?,
-            "persistent" => self.persistent = Some(parse_u32(key, value)?),
+            "reconnect-delay" | "reconnect_delay" | "persistent" => {
+                self.reconnect_delay = Some(parse_u32(key, value)?)
+            }
+            "max_recoonects" | "max_reconnects" | "max-reconnects" => {
+                self.max_reconnects = parse_u32(key, value)?
+            }
             "set-dns" => self.set_dns = parse_bool(value)?,
             "pppd-use-peerdns" => self.pppd_use_peerdns = parse_bool(value)?,
             "pppd-log" => self.pppd_log = Some(value.to_owned()),
@@ -260,6 +265,7 @@ impl Config {
             "user-agent" => self.user_agent = value.to_owned(),
             "hostcheck" => self.hostcheck = Some(value.to_owned()),
             "check-virtual-desktop" => self.check_virtual_desktop = Some(value.to_owned()),
+            "proxy" => self.proxy = Some(parse_socket_addr("proxy", value)?),
             other => return Err(OpenfortivpnError::UnknownConfigKey(other.to_owned())),
         }
 
@@ -372,8 +378,11 @@ impl Config {
         if cli.seclevel_1 {
             self.seclevel_1 = true;
         }
-        if let Some(value) = cli.persistent {
-            self.persistent = Some(value);
+        if let Some(value) = cli.reconnect_delay.or(cli.persistent) {
+            self.reconnect_delay = Some(value);
+        }
+        if let Some(value) = cli.max_reconnects {
+            self.max_reconnects = value;
         }
         if let Some(value) = cli.pppd_use_peerdns {
             self.pppd_use_peerdns = value;
@@ -401,6 +410,9 @@ impl Config {
         }
         if let Some(value) = &cli.ppp_system {
             self.ppp_system = Some(value.clone());
+        }
+        if let Some(value) = cli.proxy {
+            self.proxy = Some(value);
         }
 
         Ok(())
@@ -443,6 +455,12 @@ pub fn parse_bool(value: &str) -> Result<bool> {
         Ok(1) => Ok(true),
         _ => Err(OpenfortivpnError::BadBoolean(value.to_owned())),
     }
+}
+
+fn parse_socket_addr(key: &str, value: &str) -> Result<SocketAddr> {
+    value
+        .parse()
+        .map_err(|_| OpenfortivpnError::Network(format!("bad socket address for {key}: {value}")))
 }
 
 fn parse_port(key: &str, value: &str) -> Result<u16> {
@@ -530,6 +548,8 @@ mod tests {
             password = bar
             set-dns = 0
             trusted-cert = e46d4aff08ba6914e64daa85bc6112a422fa7ce16631bff0b592a28556f993db
+            max_recoonects = 2
+            reconnect-delay = 5
             "#,
         )
         .unwrap();
@@ -540,6 +560,19 @@ mod tests {
         assert_eq!(cfg.password.as_deref(), Some("bar"));
         assert!(!cfg.set_dns);
         assert_eq!(cfg.trusted_certs.len(), 1);
+        assert_eq!(cfg.max_reconnects, 2);
+        assert_eq!(cfg.reconnect_delay, Some(5));
+    }
+
+    #[test]
+    fn parses_legacy_persistent_as_reconnect_delay() {
+        let cfg = Config::parse_config_file("persistent = 7").unwrap();
+        assert_eq!(cfg.reconnect_delay, Some(7));
+    }
+
+    #[test]
+    fn config_max_reconnects_defaults_to_zero() {
+        assert_eq!(Config::default().max_reconnects, 0);
     }
 
     #[test]
@@ -558,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn from_sources_continues_when_default_config_is_missing() {
+    fn from_sources_does_not_load_default_config_path() {
         use clap::Parser;
 
         let cli = Cli::parse_from(["openfortivpn", "vpn.example"]);
