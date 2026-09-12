@@ -19,6 +19,7 @@ rustls-pemfile = "2.2"
 sha2 = "0.10"
 smoltcp = { version = "0.11", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"] }
 thiserror = "1.0"
+dialoguer = "0.12.0"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs", "net", "poll", "process", "signal", "term"] }

@@ -33,7 +33,7 @@ use openfortivpn_rs::tunnel::pppd::{
 use openfortivpn_rs::tunnel::session::TunnelSession;
 use openfortivpn_rs::user_input;
 
-fn main() -> Result<()> {
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.version {
@@ -70,6 +70,25 @@ fn main() -> Result<()> {
     let stop_requested = Arc::new(AtomicBool::new(false));
     install_ctrlc_handler(stop_requested.clone())?;
     run_with_persistence(config, stop_requested)
+}
+
+fn main() -> Result<()> {
+    let mut proceed = true;
+
+    while proceed {
+        match run() {
+            Ok(_) => println!("Disconnected"),
+            Err(err) => println!("Disconnected: {err}"),
+        };
+        proceed = dialoguer::Confirm::new()
+            .with_prompt("Do you want to reconnect?")
+            .wait_for_newline(false)
+            .report(false)
+            .interact()
+            .unwrap_or(false);
+    }
+
+    Ok(())
 }
 
 fn validate_and_complete_auth_config(config: &mut Config) -> Result<()> {
